@@ -5,7 +5,9 @@ import time
 import logging
 import os
 import json
+import pickle
 from collections import defaultdict
+
 
 def list2tuple(l):
     return tuple(list2tuple(x) if type(x)==list else x for x in l)
@@ -52,26 +54,6 @@ def flatten_query(queries):
         all_queries.extend([(query, query_structure) for query in tmp_queries])
     return all_queries
 
-def set_logger(args):
-    ''' Write logs to console and log file '''
-    if args.do_train:
-        log_file = os.path.join(args.save_path, 'train.log')
-    else:
-        log_file = os.path.join(args.save_path, 'test.log')
-
-    logging.basicConfig( 
-        format='%(asctime)s %(levelname)-8s %(message)s',
-        level=logging.INFO, datefmt='%Y%m%d_%H%M%S',
-        filename=log_file, filemode='a+')
-    logger = logging.getLogger('')
-    if args.print_on_screen:
-        console = logging.StreamHandler()
-        console.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s %(levelname)-8s %(message)s')
-        console.setFormatter(formatter)
-        logger.addHandler(console)
-    return logger
-
 
 def save_model(model, optimizer, save_variable_list, args):
     '''
@@ -90,9 +72,7 @@ def save_model(model, optimizer, save_variable_list, args):
     )
 
 def log_metrics(mode, step, metrics):
-    '''
-    Print the evaluation logs
-    '''
+    ''' Print the evaluation logs '''
     for metric in metrics:
         logging.info('%s %s at step %d: %f' % (mode, metric, step, metrics[metric]))
 
@@ -123,3 +103,32 @@ def evaluate(model, tp_answers, fn_answers, args, dataloader, query_name_dict, m
     log_metrics('%s average'%mode, step, average_metrics)
 
     return all_metrics
+
+
+def load_data(args, dataset, tasks, all_tasks, name_query_dict):
+    ''' Load queries and remove queries not in tasks '''
+    args.logger.info("loading data")
+    dataset.train_queries = pickle.load(open(os.path.join(args.data_path, "train-queries.pkl"), 'rb'))
+    dataset.train_answers = pickle.load(open(os.path.join(args.data_path, "train-answers.pkl"), 'rb'))
+    dataset.valid_queries = pickle.load(open(os.path.join(args.data_path, "valid-queries.pkl"), 'rb'))
+    dataset.valid_hard_answers = pickle.load(open(os.path.join(args.data_path, "valid-hard-answers.pkl"), 'rb'))
+    dataset.valid_easy_answers = pickle.load(open(os.path.join(args.data_path, "valid-easy-answers.pkl"), 'rb'))
+    dataset.test_queries = pickle.load(open(os.path.join(args.data_path, "test-queries.pkl"), 'rb'))
+    dataset.test_hard_answers = pickle.load(open(os.path.join(args.data_path, "test-hard-answers.pkl"), 'rb'))
+    dataset.test_easy_answers = pickle.load(open(os.path.join(args.data_path, "test-easy-answers.pkl"), 'rb'))
+    
+    # remove tasks not in args.tasks
+    for name in all_tasks:
+        if 'u' in name:
+            name, evaluate_union = name.split('-')
+        else:
+            evaluate_union = args.evaluate_union
+        if name not in tasks or evaluate_union != args.evaluate_union:
+            query_structure = name_query_dict[name if 'u' not in name else '-'.join([name, evaluate_union])]
+            if query_structure in dataset.train_queries:
+                del dataset.train_queries[query_structure]
+            if query_structure in dataset.valid_queries:
+                del dataset.valid_queries[query_structure]
+            if query_structure in dataset.test_queries:
+                del dataset.test_queries[query_structure]
+
