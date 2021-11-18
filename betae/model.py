@@ -5,24 +5,33 @@ from __future__ import division
 from __future__ import print_function
 
 import logging
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from betae.dataloader import TestDataset, TrainDataset, SingledirectionalOneShotIterator
-import random
-import pickle
-import math
 import collections
-import itertools
-import time
 from tqdm import tqdm
-import os
 
 def Identity(x):
     return x
 
+
+class CenterIntersection(nn.Module):
+
+    def __init__(self, dim):
+        super(CenterIntersection, self).__init__()
+        self.dim = dim
+        self.layer1 = nn.Linear(self.dim, self.dim)
+        self.layer2 = nn.Linear(self.dim, self.dim)
+
+        nn.init.xavier_uniform_(self.layer1.weight)
+        nn.init.xavier_uniform_(self.layer2.weight)
+
+    def forward(self, embeddings):
+        layer1_act = F.relu(self.layer1(embeddings)) # (num_conj, dim)
+        attention = F.softmax(self.layer2(layer1_act), dim=0) # (num_conj, dim)
+        embedding = torch.sum(attention * embeddings, dim=0)
+
+        return embedding
 
 class BetaIntersection(nn.Module):
 
@@ -54,7 +63,7 @@ class BetaProjection(nn.Module):
         self.num_layers = num_layers
         self.layer1 = nn.Linear(self.entity_dim + self.relation_dim, self.hidden_dim) # 1st layer
         self.layer0 = nn.Linear(self.hidden_dim, self.entity_dim) # final layer
-        for nl in range(2, num_layers + 1):
+        for nl in range(2, num_layers + 1): # interesting way of setting layers in a loop
             setattr(self, "layer{}".format(nl), nn.Linear(self.hidden_dim, self.hidden_dim))
         for nl in range(num_layers + 1):
             nn.init.xavier_uniform_(getattr(self, "layer{}".format(nl)).weight)
@@ -79,62 +88,37 @@ class Regularizer():
         return torch.clamp(entity_embedding + self.base_add, self.min_val, self.max_val)
 
 class KGReasoning(nn.Module):
-    def __init__(self, nentity, nrelation, hidden_dim, gamma, 
-                 geo, test_batch_size=1,
-                 box_mode=None, use_cuda=False,
-                 query_name_dict=None, beta_mode=None):
+    def __init__(self, nentity, nrelation, hidden_dim, gamma, test_batch_size=1, query_name_dict=None, beta_mode=None):
         super(KGReasoning, self).__init__()
         self.nentity = nentity
         self.nrelation = nrelation
-        self.hidden_dim = hidden_dim
+        # self.hidden_dim = hidden_dim # hidden dim for graph embedding: 400 
         self.epsilon = 2.0
-        self.geo = geo
-        self.use_cuda = use_cuda
-        self.batch_entity_range = torch.arange(nentity).to(torch.float).repeat(test_batch_size, 1).cuda() if self.use_cuda else torch.arange(nentity).to(torch.float).repeat(test_batch_size, 1) # used in test_step
+        self.batch_entity_range = torch.arange(nentity).to(torch.float).repeat(test_batch_size, 1).cuda() # used in test_step
         self.query_name_dict = query_name_dict
 
-        self.gamma = nn.Parameter(
-            torch.Tensor([gamma]), 
-            requires_grad=False
-        )
-
-        self.embedding_range = nn.Parameter(
-            torch.Tensor([(self.gamma.item() + self.epsilon) / hidden_dim]), 
-            requires_grad=False
-        )
+        self.gamma = nn.Parameter(torch.Tensor([gamma]), requires_grad=False)
+        self.embedding_range = nn.Parameter(torch.Tensor([(self.gamma.item() + self.epsilon) / hidden_dim]), requires_grad=False)
         
         self.entity_dim = hidden_dim
         self.relation_dim = hidden_dim
-        
-        if self.geo == 'beta':
-            self.entity_embedding = nn.Parameter(torch.zeros(nentity, self.entity_dim * 2)) # alpha and beta
-            self.entity_regularizer = Regularizer(1, 0.05, 1e9) # make sure the parameters of beta embeddings are positive
-            self.projection_regularizer = Regularizer(1, 0.05, 1e9) # make sure the parameters of beta embeddings after relation projection are positive
-        nn.init.uniform_(
-            tensor=self.entity_embedding, 
-            a=-self.embedding_range.item(), 
-            b=self.embedding_range.item()
-        )
 
+        ''' Create param and limiter for node embedding, and init them '''
+        self.entity_embedding = nn.Parameter(torch.zeros(nentity, self.entity_dim * 2)) # alpha and beta
+        self.entity_regularizer = Regularizer(1, 0.05, 1e9) # make sure the parameters of beta embeddings are positive
+        self.projection_regularizer = Regularizer(1, 0.05, 1e9) # make sure the parameters of beta embeddings after relation projection are positive
+        nn.init.uniform_( tensor=self.entity_embedding, a=-self.embedding_range.item(), b=self.embedding_range.item())
+        ''' Create param for edge embedding and init'''
         self.relation_embedding = nn.Parameter(torch.zeros(nrelation, self.relation_dim))
-        nn.init.uniform_(
-            tensor=self.relation_embedding, 
-            a=-self.embedding_range.item(), 
-            b=self.embedding_range.item()
-        )
+        nn.init.uniform_(tensor=self.relation_embedding, a=-self.embedding_range.item(), b=self.embedding_range.item())
 
-        if self.geo == 'beta':
-            hidden_dim, num_layers = beta_mode
-            self.center_net = BetaIntersection(self.entity_dim)
-            self.projection_net = BetaProjection(self.entity_dim * 2, 
-                                             self.relation_dim, 
-                                             hidden_dim, 
-                                             self.projection_regularizer, 
-                                             num_layers)
+        ''' Setup NNs for beta embedding Logical Reasoning '''
+        hidden_dim, num_layers = beta_mode # not the same hidden_dim as before 1600 here 400 before
+        self.center_net = BetaIntersection(self.entity_dim)
+        self.projection_net = BetaProjection(self.entity_dim * 2, self.relation_dim, hidden_dim, self.projection_regularizer, num_layers)
 
     def forward(self, positive_sample, negative_sample, subsampling_weight, batch_queries_dict, batch_idxs_dict):
-        if self.geo == 'beta':
-            return self.forward_beta(positive_sample, negative_sample, subsampling_weight, batch_queries_dict, batch_idxs_dict)
+        return self.forward_beta(positive_sample, negative_sample, subsampling_weight, batch_queries_dict, batch_idxs_dict)
 
     def embed_query_beta(self, queries, query_structure, idx):
         '''
@@ -184,18 +168,14 @@ class KGReasoning(nn.Module):
         all_union_idxs, all_union_alpha_embeddings, all_union_beta_embeddings = [], [], []
         for query_structure in batch_queries_dict:
             if 'u' in self.query_name_dict[query_structure] and 'DNF' in self.query_name_dict[query_structure]:
-                alpha_embedding, beta_embedding, _ = \
-                    self.embed_query_beta(self.transform_union_query(batch_queries_dict[query_structure], 
-                                                                     query_structure), 
-                                          self.transform_union_structure(query_structure), 
-                                          0)
+                alpha_embedding, beta_embedding, _ = self.embed_query_beta(
+                    self.transform_union_query(batch_queries_dict[query_structure], query_structure), 
+                    self.transform_union_structure(query_structure), 0)
                 all_union_idxs.extend(batch_idxs_dict[query_structure])
                 all_union_alpha_embeddings.append(alpha_embedding)
                 all_union_beta_embeddings.append(beta_embedding)
             else:
-                alpha_embedding, beta_embedding, _ = self.embed_query_beta(batch_queries_dict[query_structure], 
-                                                                           query_structure, 
-                                                                           0)
+                alpha_embedding, beta_embedding, _ = self.embed_query_beta(batch_queries_dict[query_structure], query_structure, 0)
                 all_idxs.extend(batch_idxs_dict[query_structure])
                 all_alpha_embeddings.append(alpha_embedding)
                 all_beta_embeddings.append(beta_embedding)
@@ -276,9 +256,10 @@ class KGReasoning(nn.Module):
 
     @staticmethod
     def train_step(model, optimizer, train_iterator, args, step):
+        ''' Obtain sample, train with model, gradient descent, return log '''
         model.train()
         optimizer.zero_grad()
-
+        ''' Get samples and prep for learning '''
         positive_sample, negative_sample, subsampling_weight, batch_queries, query_structures = next(train_iterator)
         batch_queries_dict = collections.defaultdict(list)
         batch_idxs_dict = collections.defaultdict(list)
@@ -286,17 +267,15 @@ class KGReasoning(nn.Module):
             batch_queries_dict[query_structures[i]].append(query)
             batch_idxs_dict[query_structures[i]].append(i)
         for query_structure in batch_queries_dict:
-            if args.cuda:
-                batch_queries_dict[query_structure] = torch.LongTensor(batch_queries_dict[query_structure]).cuda()
-            else:
-                batch_queries_dict[query_structure] = torch.LongTensor(batch_queries_dict[query_structure])
-        if args.cuda:
-            positive_sample = positive_sample.cuda()
-            negative_sample = negative_sample.cuda()
-            subsampling_weight = subsampling_weight.cuda()
-
+            batch_queries_dict[query_structure] = torch.LongTensor(batch_queries_dict[query_structure]).cuda()
+        positive_sample = positive_sample.cuda()
+        negative_sample = negative_sample.cuda()
+        subsampling_weight = subsampling_weight.cuda()
+        
+        ''' Training using model '''
         positive_logit, negative_logit, subsampling_weight, _ = model(positive_sample, negative_sample, subsampling_weight, batch_queries_dict, batch_idxs_dict)
 
+        ''' Calculate loss '''
         negative_score = F.logsigmoid(-negative_logit).mean(dim=1)
         positive_score = F.logsigmoid(positive_logit).squeeze(dim=1)
         positive_sample_loss = - (subsampling_weight * positive_score).sum()
@@ -305,8 +284,8 @@ class KGReasoning(nn.Module):
         negative_sample_loss /= subsampling_weight.sum()
 
         loss = (positive_sample_loss + negative_sample_loss)/2
-        loss.backward()
-        optimizer.step()
+        loss.backward() # gradient
+        optimizer.step() # descent
         log = {
             'positive_sample_loss': positive_sample_loss.item(),
             'negative_sample_loss': negative_sample_loss.item(),
@@ -330,12 +309,8 @@ class KGReasoning(nn.Module):
                     batch_queries_dict[query_structures[i]].append(query)
                     batch_idxs_dict[query_structures[i]].append(i)
                 for query_structure in batch_queries_dict:
-                    if args.cuda:
-                        batch_queries_dict[query_structure] = torch.LongTensor(batch_queries_dict[query_structure]).cuda()
-                    else:
-                        batch_queries_dict[query_structure] = torch.LongTensor(batch_queries_dict[query_structure])
-                if args.cuda:
-                    negative_sample = negative_sample.cuda()
+                    batch_queries_dict[query_structure] = torch.LongTensor(batch_queries_dict[query_structure]).cuda()
+                negative_sample = negative_sample.cuda()
 
                 _, negative_logit, _, idxs = model(None, negative_sample, None, batch_queries_dict, batch_idxs_dict)
                 queries_unflatten = [queries_unflatten[i] for i in idxs]
@@ -345,10 +320,7 @@ class KGReasoning(nn.Module):
                 if len(argsort) == args.test_batch_size: # if it is the same shape with test_batch_size, we can reuse batch_entity_range without creating a new one
                     ranking = ranking.scatter_(1, argsort, model.batch_entity_range) # achieve the ranking of all entities
                 else: # otherwise, create a new torch Tensor for batch_entity_range
-                    if args.cuda:
-                        ranking = ranking.scatter_(1, argsort, torch.arange(model.nentity).to(torch.float).repeat(argsort.shape[0], 1).cuda()) # achieve the ranking of all entities
-                    else:
-                        ranking = ranking.scatter_(1, argsort, torch.arange(model.nentity).to(torch.float).repeat(argsort.shape[0], 1)) # achieve the ranking of all entities
+                    ranking = ranking.scatter_(1, argsort, torch.arange(model.nentity).to(torch.float).repeat(argsort.shape[0], 1).cuda()) # achieve the ranking of all entities
                 for idx, (i, query, query_structure) in enumerate(zip(argsort[:, 0], queries_unflatten, query_structures)):
                     hard_answer = hard_answers[query]
                     easy_answer = easy_answers[query]
@@ -358,10 +330,7 @@ class KGReasoning(nn.Module):
                     cur_ranking = ranking[idx, list(easy_answer) + list(hard_answer)]
                     cur_ranking, indices = torch.sort(cur_ranking)
                     masks = indices >= num_easy
-                    if args.cuda:
-                        answer_list = torch.arange(num_hard + num_easy).to(torch.float).cuda()
-                    else:
-                        answer_list = torch.arange(num_hard + num_easy).to(torch.float)
+                    answer_list = torch.arange(num_hard + num_easy).to(torch.float).cuda()
                     cur_ranking = cur_ranking - answer_list + 1 # filtered setting
                     cur_ranking = cur_ranking[masks] # only take indices that belong to the hard answers
 

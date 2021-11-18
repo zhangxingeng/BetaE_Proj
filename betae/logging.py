@@ -2,6 +2,7 @@ import logging
 import os
 
 def set_logger(args):
+    global logger
     ''' Write logs to console and log file '''
     if args.do_train:
         log_file = os.path.join(args.save_path, 'train.log')
@@ -21,23 +22,37 @@ def set_logger(args):
         logger.addHandler(console)
     return logger
 
-def log_load_data(args):
-    args.logger.info('-------------------------------'*3)
-    args.logger.info('Geo: %s' % args.geo)
-    args.logger.info('Data Path: %s' % args.data_path)
-    args.logger.info('#entity: %d' % args.nentity)
-    args.logger.info('#relation: %d' % args.nrelation)
-    args.logger.info('#max steps: %d' % args.max_steps)
-    args.logger.info('Evaluate unoins using: %s' % args.evaluate_union)
+def generate_save_path(args):
+    ''' generate path to store logs '''
+    args.save_path = os.path.join(args.prefix, args.data_path.split('/')[-1], args.tasks.replace('.', '_'), args.geo)
+    tmp_str = "g_{}_mode_{}".format(args.gamma, args.beta_mode.replace(',', '_'))
+    args.save_path = args.checkpoint_path if args.checkpoint_path != None else os.path.join(args.save_path, tmp_str, args.cur_time)
+    if not os.path.exists(args.save_path):
+        os.makedirs(os.path.join('./', args.save_path))
+    print ("logging to", args.save_path)
 
-def log_training_info(args, init_step, current_learning_rate):
+def log_metrics(mode, step, metrics, logger):
+    ''' Print the evaluation logs '''
+    for metric in metrics:
+        logger.info('%s %s at step %d: %f' % (mode, metric, step, metrics[metric]))
+
+def log_load_data(args, logger):
+    logger.info('-------------------------------'*3)
+    logger.info('Geo: %s' % args.geo)
+    logger.info('Data Path: %s' % args.data_path)
+    logger.info('#entity: %d' % args.nentity)
+    logger.info('#relation: %d' % args.nrelation)
+    logger.info('#max steps: %d' % args.max_steps)
+    logger.info('Evaluate unoins using: %s' % args.evaluate_union)
+
+def log_training_info(args, init_step, current_learning_rate, logger):
     if args.geo == 'beta':
-        args.logger.info('beta mode = %s' % args.beta_mode)
-    args.logger.info('tasks = %s' % args.tasks)
-    args.logger.info('init_step = %d' % init_step)
+        logger.info('beta mode = %s' % args.beta_mode)
+    logger.info('tasks = %s' % args.tasks)
+    logger.info('init_step = %d' % init_step)
     if args.do_train:
-        args.logger.info('Start Training...')
-        args.logger.info('learning_rate = %d' % current_learning_rate)
-    args.logger.info('batch_size = %d' % args.batch_size)
-    args.logger.info('hidden_dim = %d' % args.hidden_dim)
-    args.logger.info('gamma = %f' % args.gamma)
+        logger.info('Start Training...')
+        logger.info('learning_rate = %d' % current_learning_rate)
+    logger.info('batch_size = %d' % args.batch_size)
+    logger.info('hidden_dim = %d' % args.hidden_dim)
+    logger.info('gamma = %f' % args.gamma)
