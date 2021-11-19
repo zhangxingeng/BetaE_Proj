@@ -15,24 +15,6 @@ def Identity(x):
     return x
 
 
-class CenterIntersection(nn.Module):
-
-    def __init__(self, dim):
-        super(CenterIntersection, self).__init__()
-        self.dim = dim
-        self.layer1 = nn.Linear(self.dim, self.dim)
-        self.layer2 = nn.Linear(self.dim, self.dim)
-
-        nn.init.xavier_uniform_(self.layer1.weight)
-        nn.init.xavier_uniform_(self.layer2.weight)
-
-    def forward(self, embeddings):
-        layer1_act = F.relu(self.layer1(embeddings)) # (num_conj, dim)
-        attention = F.softmax(self.layer2(layer1_act), dim=0) # (num_conj, dim)
-        embedding = torch.sum(attention * embeddings, dim=0)
-
-        return embedding
-
 class BetaIntersection(nn.Module):
 
     def __init__(self, dim):
@@ -121,6 +103,7 @@ class KGReasoning(nn.Module):
         return self.forward_beta(positive_sample, negative_sample, subsampling_weight, batch_queries_dict, batch_idxs_dict)
 
     def embed_query_beta(self, queries, query_structure, idx):
+        ''' Recursively embed queries, each recursive is one forward traversal '''
         '''
         Iterative embed a batch of queries with same structure using BetaE
         queries: a flattened batch of queries

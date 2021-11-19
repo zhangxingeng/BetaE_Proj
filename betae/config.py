@@ -1,5 +1,5 @@
 config = {
-  "cuda": True, "do_train": True, "do_valid": False, "do_test": False,
+  "cuda": True, "do_train": True, "do_valid": True, "do_test": True,
   "data_path": "data/FB15k-betae",
   "negative_sample_size": 128,	# negative entities sampled per query
   "hidden_dim": 400,	# embedding dimension
@@ -7,15 +7,15 @@ config = {
   "batch_size": 512,	# batch size of queries
   "test_batch_size": 1,	# valid/test batch size
   "learning_rate": 0.0001,
-  "cpu_num": 1,	# used to speed up torch.dataloader
+  "cpu_num": 4,	# used to speed up torch.dataloader
   "save_path": "./saves",	# no need to set manually, will configure automatically
-  "max_steps": 1000, # 450001,  # maximum iterations to train
+  "max_steps": 200001, # 450001,  # maximum iterations to train
   "warm_up_steps": None,	# no need to set manually, will configure automatically
 
-  "save_checkpoint_steps": 50000,  # save checkpoints every xx steps
-  "valid_steps":  500, #15000,	# evaluate validation queries every xx steps
+  "save_checkpoint_steps": 5000,  # save checkpoints every xx steps
+  "valid_steps":  10000, #15000,	# evaluate validation queries every xx steps
   "log_steps": 100,	# train log every xx steps
-  "test_log_steps": 100, # 1000,	# valid/test log every xx steps
+  "test_log_steps": 1000, # 1000,	# valid/test log every xx steps
 
   "nentity": 0,  # DO NOT MANUALLY SET
   "nrelation": 0,	# DO NOT MANUALLY SET

@@ -29,6 +29,7 @@ class TestDataset(Dataset):
     
     @staticmethod
     def collate_fn(data):
+        ''' Replace standard collate_fn, collapse list of tuples into a tuple of lists '''
         negative_sample = torch.stack([_[0] for _ in data], dim=0)
         query = [_[1] for _ in data]
         query_unflatten = [_[2] for _ in data]
@@ -50,25 +51,22 @@ class TrainDataset(Dataset):
         return self.len
     
     def __getitem__(self, idx):
+        ''' get one correct ansewer and negative_sample_size of negative answer '''
         query = self.queries[idx][0]
         query_structure = self.queries[idx][1]
-        tail = np.random.choice(list(self.answer[query]))
+        tail = np.random.choice(list(self.answer[query])) # randomly get an answer
+        ''' subsampling_weight: the more frequent one node appears in answers, the less it weights as answer '''
         subsampling_weight = self.count[query] 
         subsampling_weight = torch.sqrt(1 / torch.Tensor([subsampling_weight]))
         negative_sample_list = []
         negative_sample_size = 0
         while negative_sample_size < self.negative_sample_size:
-            negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size*2)
-            mask = np.in1d(
-                negative_sample, 
-                self.answer[query], 
-                assume_unique=True, 
-                invert=True
-            )
-            negative_sample = negative_sample[mask]
+            negative_sample = np.random.randint(self.nentity, size=self.negative_sample_size*2) # randomly pick some node
+            mask = np.in1d(negative_sample, self.answer[query], assume_unique=True, invert=True)
+            negative_sample = negative_sample[mask] # mask actual answer from negative sample
             negative_sample_list.append(negative_sample)
             negative_sample_size += negative_sample.size
-        negative_sample = np.concatenate(negative_sample_list)[:self.negative_sample_size]
+        negative_sample = np.concatenate(negative_sample_list)[:self.negative_sample_size] # only get negative_sample_size negative samples
         negative_sample = torch.from_numpy(negative_sample)
         positive_sample = torch.LongTensor([tail])
         return positive_sample, negative_sample, subsampling_weight, flatten(query), query_structure
@@ -85,7 +83,7 @@ class TrainDataset(Dataset):
     @staticmethod
     def count_frequency(queries, answer, start=4):
         count = {}
-        for query, qtype in queries:
+        for query, _ in queries:
             count[query] = start + len(answer[query])
         return count
 
